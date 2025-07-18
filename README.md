@@ -1,4 +1,4 @@
----
+***
 
 ## 2 . Installation
 
@@ -13,7 +13,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
----
+***
 
 ## 3 . Demo notebook
 
@@ -22,9 +22,10 @@ jupyter notebook examples/demo.ipynb
 ```
 Workflow example detection → post‑processing → evaluation.
 
----
+***
 
-## 4 . Folder layout
+
+## 4 . Folder structure
 
 ```
 fault_structure_toolbox/          # project root 
@@ -48,9 +49,10 @@ fault_structure_toolbox/          # project root
 └── README.md
 ```
 
----
+***
 
-## 5 . Function Overview
+
+ 5 . Function Overview
 
 | Helper | Source | Purpose |
 |--------|--------|---------|
@@ -69,7 +71,7 @@ from toolbox.pipeline import (
 )
 ```
 
----
+***
 
 ## 6 . Typical Workflow
 
@@ -92,4 +94,5 @@ segments = postprocess(mask, rgb, tile_size=512)
 evaluate_mask(mask, orient, rgb=rgb, segments=segments,
               pdf_out="tile_roses_with_segments.pdf", tile_size=512)
 ```
----
+***
+
