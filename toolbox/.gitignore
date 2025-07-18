@@ -1,0 +1,46 @@
+# Byte‑compiled / optimized / DLL files
+
+**pycache**/
+\*.py\[cod]
+\*\$py.class
+
+# Virtual environments
+
+.venv/
+.env/
+
+# IDE / editor folders
+
+.idea/
+.vscode/
+
+# macOS clutter
+
+.DS\_Store
+
+# Jupyter checkpoints
+
+.ipynb\_checkpoints/
+
+# Build artifacts
+
+build/
+dist/
+\*.egg-info/
+
+# Logs and temporary files
+
+\*.log
+\*.tmp
+
+# PDF & output artifacts
+
+\*.pdf
+
+# Rasterio auxiliary files
+
+\*.aux.xml
+
+# OS generated files
+
+Thumbs.db
