@@ -15,7 +15,7 @@ pip install -r requirements.txt
 
 ---
 
-## 3 . Quick‑start notebook
+## 3 . Demo notebook
 
 ```bash
 jupyter notebook examples/demo.ipynb
@@ -50,7 +50,7 @@ fault_structure_toolbox/          # project root
 
 ---
 
-## 5 . API overview
+## 5 . Function Overview
 
 | Helper | Source | Purpose |
 |--------|--------|---------|
@@ -71,7 +71,7 @@ from toolbox.pipeline import (
 
 ---
 
-## 6 . Typical script
+## 6 . Typical Workflow
 
 ```python
 from toolbox.pipeline import run, postprocess, evaluate_mask
