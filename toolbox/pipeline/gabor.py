@@ -3,40 +3,32 @@ from __future__ import annotations
 import cv2
 import numpy as np
 from pathlib import Path
+from scipy.ndimage import uniform_filter1d
 
 from .derive_odd_kernel import direction_hilbert_kernel
 
-__all__ = ["create_gabor_kernels", "run"]
+__all__ = ["create_gabor_kernels", "run", "compute_pc"]
 
 
 def create_gabor_kernels(
-    ksize=None,  # Jetzt optional!
+    ksize=None,
     scales=None,
     gamma=0.1,
     psi=0,
-    step_deg=16,
+    step_deg=2,
 ):
-    """
-    Returns:
-      kernels:  list[np.ndarray]      (n_kernels,) each (ksize, ksize) float32, L2-normalized
-      thetas:   np.ndarray float32    (n_kernels,) theta in radians
-      theta_deg:np.ndarray int32      (n_kernels,) theta in degrees (0..179)
-      scale_ids:np.ndarray int32      (n_kernels,) scale index
-      scales:   list[dict]            list of {"sigma":..., "lambd":...}
-    """
     if scales is None:
         scales = [
-            dict(sigma=3,   lambd=6),    # feinste Details
-            dict(sigma=6,   lambd=12),   # deine erste
-            dict(sigma=12,  lambd=24),   # mittlere Strukturen
-            dict(sigma=24,  lambd=48),   # grobe Strukturen
+            dict(sigma=8,   lambd=16),  # Fine geology
+            dict(sigma=16,  lambd=32),  # Medium faults
+            dict(sigma=32,  lambd=64),  # Major structural scarps
+            dict(sigma=64,  lambd=128), # Regional tectonic trends
         ]
 
-    # Adaptive Kernel-Größe basierend auf größtem sigma
     if ksize is None:
         sigma_max = max(sc["sigma"] for sc in scales)
-        k = int(np.ceil(6 * sigma_max))  # Faustregel: 6*sigma
-        k = k + 1 if k % 2 == 0 else k   # Ungerade machen
+        k = int(np.ceil(6 * sigma_max))
+        k = k + 1 if k % 2 == 0 else k
         ksize = (k, k)
         print(f"Auto kernel size for sigma_max={sigma_max}: {ksize}")
 
@@ -71,11 +63,46 @@ def create_gabor_kernels(
 
     return (
         kernels,
-        np.array(thetas, dtype=np.float32),
+        np.array(thetas,         dtype=np.float32),
         np.array(theta_deg_list, dtype=np.int32),
-        np.array(scale_ids, dtype=np.int32),
+        np.array(scale_ids,      dtype=np.int32),
         scales,
     )
+
+
+def _integrate_along_orientations(gray0, unique_theta_deg, width):
+    """
+    directional integration using 1D Gaussian smoothing.
+
+    """
+    from scipy.ndimage import gaussian_filter1d
+    
+    h, w = gray0.shape
+    center = (w // 2, h // 2)
+    out = {}
+    
+    # Standard deviation for the Gaussian filter (approx width/2)
+    sigma_int = width / 2.0 
+    
+    for deg in unique_theta_deg:
+        # 1. Rotate to align orientation with the horizontal axis
+        M = cv2.getRotationMatrix2D(center, -float(deg), 1.0)
+        rot = cv2.warpAffine(gray0, M, (w, h), 
+                             flags=cv2.INTER_LINEAR, 
+                             borderMode=cv2.BORDER_REFLECT)
+        
+        # 2. Apply 1D Smoothing ONLY along the X-axis (longitudinal)
+        # Using Gaussian filter instead of uniform for better spectral properties
+        intg = gaussian_filter1d(rot, sigma=sigma_int, axis=1, mode='reflect')
+        
+        # 3. Rotate back
+        Mi = cv2.getRotationMatrix2D(center, float(deg), 1.0)
+        back = cv2.warpAffine(intg, Mi, (w, h), 
+                              flags=cv2.INTER_LINEAR, 
+                              borderMode=cv2.BORDER_REFLECT)
+        
+        out[int(deg)] = back.astype(np.float32)
+    return out
 
 
 def run(
@@ -85,26 +112,13 @@ def run(
     do_clahe: bool = False,
     return_eo: bool = False,
     return_kernels: bool = False,
-    ksize=None,  # Jetzt optional!
+    ksize=None,
     scales=None,
     gamma: float = 0.2,
     psi: float = 0.0,
-    step_deg: int = 16,
+    step_deg: int = 2,
+    integration_width: int = 0,   # ← NEW: 0=off  5-30=ridgelet-like
 ):
-    """
-    Quadrature Gabor bank (even + odd via directional Hilbert), tiled with HALO.
-
-    Returns dict:
-      AMP: (S, T, H, W) float32
-      PHI: (S, T, H, W) float32
-      thetas: (T,) float32 radians
-      theta_deg: (T,) int32 degrees
-      scales: list of dicts (len S)
-      scale_ids: (S,) int32 (0..S-1)
-      optional:
-        E/O: (S, T, H, W) float32
-        kernels: dict with even/odd and mappings
-    """
     # --------------------------
     # Load + gray
     # --------------------------
@@ -120,28 +134,27 @@ def run(
 
     if do_clahe:
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-        gray0 = clahe.apply((gray0 * 255).astype(np.uint8)).astype(np.float32) / 255.0
+        gray0 = clahe.apply(
+            (gray0 * 255).astype(np.uint8)
+        ).astype(np.float32) / 255.0
 
     # --------------------------
-    # Build filterbank (even kernels + theta_deg for stable indexing)
+    # Build filterbank
     # --------------------------
     even_kernels, thetas_raw, theta_deg_raw, scale_ids_raw, scales_used = create_gabor_kernels(
-        ksize=ksize,  # Wird automatisch berechnet wenn None
-        scales=scales,
-        gamma=gamma,
-        psi=psi,
-        step_deg=step_deg,
+        ksize=ksize, scales=scales, gamma=gamma,
+        psi=psi, step_deg=step_deg,
     )
 
-    # Stable theta indexing using integer degrees
-    unique_theta_deg = np.unique(theta_deg_raw)  # (T,)
-    deg_to_idx = {int(d): i for i, d in enumerate(unique_theta_deg)}
-    theta_idx = np.array([deg_to_idx[int(d)] for d in theta_deg_raw], dtype=np.int32)
-
-    unique_thetas = np.deg2rad(unique_theta_deg.astype(np.float32))  # (T,) radians
+    unique_theta_deg = np.unique(theta_deg_raw)
+    deg_to_idx  = {int(d): i for i, d in enumerate(unique_theta_deg)}
+    theta_idx   = np.array(
+        [deg_to_idx[int(d)] for d in theta_deg_raw], dtype=np.int32
+    )
+    unique_thetas = np.deg2rad(unique_theta_deg.astype(np.float32))
 
     n_scales = int(scale_ids_raw.max()) + 1
-    n_theta = int(unique_theta_deg.shape[0])
+    n_theta  = int(unique_theta_deg.shape[0])
 
     # --------------------------
     # Build odd kernels ONCE
@@ -152,11 +165,37 @@ def run(
     ]
 
     # --------------------------
+    # NEW: pre-integrate once before padding
+    # --------------------------
+    if integration_width > 0:
+        print(f"Pre-integrating along {n_theta} orientations "
+              f"(width={integration_width}px)...")
+        integrated_imgs = _integrate_along_orientations(
+            gray0, unique_theta_deg, width=integration_width
+        )
+    else:
+        integrated_imgs = None
+
+    # --------------------------
     # Global pad once (reflect)
     # --------------------------
-    pad = even_kernels[0].shape[0] // 2
-    gray = cv2.copyMakeBorder(gray0, pad, pad, pad, pad, borderType=cv2.BORDER_REFLECT)
+    pad  = even_kernels[0].shape[0] // 2
+    gray = cv2.copyMakeBorder(
+        gray0, pad, pad, pad, pad, borderType=cv2.BORDER_REFLECT
+    )
     Hp, Wp = gray.shape
+
+    # pad integrated images too
+    if integrated_imgs is not None:
+        integrated_padded = {
+            deg: cv2.copyMakeBorder(
+                img, pad, pad, pad, pad,
+                borderType=cv2.BORDER_REFLECT
+            )
+            for deg, img in integrated_imgs.items()
+        }
+    else:
+        integrated_padded = None
 
     # --------------------------
     # Allocate PADDED outputs
@@ -195,11 +234,23 @@ def run(
             ix1 = ix0 + (x2 - x)
 
             for i in range(len(even_kernels)):
-                s = int(scale_ids_raw[i])
-                t = int(theta_idx[i])
+                s   = int(scale_ids_raw[i])
+                t   = int(theta_idx[i])
+                deg = int(theta_deg_raw[i])
 
-                e_full = cv2.filter2D(tile_halo, cv2.CV_32F, even_kernels[i], borderType=cv2.BORDER_CONSTANT)
-                o_full = cv2.filter2D(tile_halo, cv2.CV_32F, odd_kernels[i],  borderType=cv2.BORDER_CONSTANT)
+                # ── NEW: switch source per orientation ───────────────
+                if integrated_padded is not None:
+                    tile_src = integrated_padded[deg][y0:y3, x0:x3]
+                else:
+                    tile_src = tile_halo
+                # ────────────────────────────────────────────────────
+
+                e_full = cv2.filter2D(tile_src, cv2.CV_32F,
+                                      even_kernels[i],
+                                      borderType=cv2.BORDER_CONSTANT)
+                o_full = cv2.filter2D(tile_src, cv2.CV_32F,
+                                      odd_kernels[i],
+                                      borderType=cv2.BORDER_CONSTANT)
 
                 e = e_full[iy0:iy1, ix0:ix1]
                 o = o_full[iy0:iy1, ix0:ix1]
@@ -222,11 +273,11 @@ def run(
         O = O[:, :, pad:-pad, pad:-pad]
 
     out = {
-        "AMP": AMP,
-        "PHI": PHI,
-        "thetas": unique_thetas,
+        "AMP":       AMP,
+        "PHI":       PHI,
+        "thetas":    unique_thetas,
         "theta_deg": unique_theta_deg,
-        "scales": scales_used,
+        "scales":    scales_used,
         "scale_ids": np.arange(n_scales, dtype=np.int32),
     }
 
@@ -236,62 +287,44 @@ def run(
 
     if return_kernels:
         out["kernels"] = {
-            "even": even_kernels,
-            "odd": odd_kernels,
-            "theta_deg_raw": theta_deg_raw,
-            "theta_raw": thetas_raw,
-            "theta_idx": theta_idx,
-            "scale_id": scale_ids_raw,
+            "even":             even_kernels,
+            "odd":              odd_kernels,
+            "theta_deg_raw":    theta_deg_raw,
+            "theta_raw":        thetas_raw,
+            "theta_idx":        theta_idx,
+            "scale_id":         scale_ids_raw,
             "theta_deg_unique": unique_theta_deg,
-            "thetas_unique": unique_thetas,
-            "scales": scales_used,
+            "thetas_unique":    unique_thetas,
+            "scales":           scales_used,
         }
 
     return out
 
-def compute_pc(AMP, PHI, k=3.0, q=0.5, eps=1e-6):
-    """
-    Kovesi Phase Congruency
-    
-    Returns:
-        PC_max: (H, W) - Maximale Kongruenz über alle Orientierungen
-        PC_t:   (T, H, W) - Kongruenz pro Orientierung
-        Or:     (H, W) - Dominante Orientierung (in Radiant)
-    """
-    # 1. Vektorsummen pro Orientierung (Symmetrie-Check)
-    C = np.sum(AMP * np.cos(PHI), axis=0)  
-    S = np.sum(AMP * np.sin(PHI), axis=0)  
-    
-    # Mittlere Phase pro Orientierung (Hier steckt die Symmetrie-Info!)
-    phi_mean = np.arctan2(S, C)  
-    
-    # 2. Phasenabweichungen & Spread-Term
-    delta_phi = PHI - phi_mean[None, :, :, :]  
-    spread = np.cos(delta_phi) - np.abs(np.sin(delta_phi))
-    
-    # 3. Gewichtete Response & Energie
-    R = np.sum(AMP * spread, axis=0)  
-    Asum = np.sum(AMP, axis=0) + eps
-    
-    n_theta = AMP.shape[1]
-    PC_t = np.zeros_like(R)
-    
-    # 4. Robuste Rauschschätzung pro Orientierung
-    for t in range(n_theta):
-        Rt = R[t]
-        # Wir nehmen das q-Quantil für die Null-Linie des Rauschens
-        r_q = np.quantile(Rt, q)
-        noise_samples = Rt[Rt <= r_q]
-        
-        mad = np.median(np.abs(noise_samples - np.median(noise_samples))) + eps
-        sigma = 1.4826 * mad
-        T_floor = np.median(noise_samples) + k * sigma
-        
-        # PC berechnen: (Energie - Noise) / Amplitudensumme
-        PC_t[t] = np.maximum(Rt - T_floor, 0.0) / Asum[t]
 
-    # 5. Finale Maps aggregieren
-    PC_max = np.max(PC_t, axis=0)
+def compute_pc(AMP, PHI, k=3.0, q=0.5, eps=1e-6):
+    C = np.sum(AMP * np.cos(PHI), axis=0)
+    S = np.sum(AMP * np.sin(PHI), axis=0)
+    phi_mean  = np.arctan2(S, C)
+    delta_phi = PHI - phi_mean[None, :, :, :]
+    spread    = np.cos(delta_phi) - np.abs(np.sin(delta_phi))
+    R         = np.sum(AMP * spread, axis=0)
+    Asum      = np.sum(AMP, axis=0) + eps
+
+    n_theta = AMP.shape[1]
+    PC_t    = np.zeros_like(R)
+
+    for t in range(n_theta):
+        Rt            = R[t]
+        r_q           = np.quantile(Rt, q)
+        noise_samples = Rt[Rt <= r_q]
+        mad           = np.median(
+            np.abs(noise_samples - np.median(noise_samples))
+        ) + eps
+        sigma         = 1.4826 * mad
+        T_floor       = np.median(noise_samples) + k * sigma
+        PC_t[t]       = np.maximum(Rt - T_floor, 0.0) / Asum[t]
+
+    PC_max         = np.max(PC_t, axis=0)
     best_theta_idx = np.argmax(PC_t, axis=0)
-    
+
     return PC_max, PC_t, best_theta_idx
