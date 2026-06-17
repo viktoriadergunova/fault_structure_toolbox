@@ -6,7 +6,7 @@ from pathlib import Path
 
 from .derive_odd_kernel import direction_hilbert_kernel
 
-__all__ = ["create_gabor_kernels", "run", "compute_pc", "scale_colour_map"]
+__all__ = ["create_gabor_kernels", "run", "compute_pc"]
 
 
 def create_gabor_kernels(
@@ -217,10 +217,7 @@ def run(
 def compute_pc(AMP, PHI, k=3.0, q=0.5, eps=1e-6):
     """
     Phase congruency with Jacobian-corrected AMP² weighting.
-
     AMP² weights — Jacobian of the polar transform (E,O)→(AMP,φ) is AMP,
-    so the correct likelihood weight is AMP². Noise in AMP² space follows
-    an exponential distribution — no Gaussian 1.4826 factor.
     """
     AMP2 = AMP ** 2                                        # (n_scales, n_theta, H, W)
 
@@ -252,12 +249,6 @@ def compute_pc(AMP, PHI, k=3.0, q=0.5, eps=1e-6):
 
 def scale_colour_map(AMP, PC_max, scale_colours=None, eps=1e-6):
     """
-    Assign each pixel a colour based on its dominant scale.
-
-    Winner-takes-all: the scale with the strongest AMP² response
-    at each pixel determines the hue. Brightness is PC strength.
-
-    Parameters
     ----------
     AMP          : (n_scales, n_theta, H, W)  — from run()
     PC_max       : (H, W)                     — from compute_pc()
@@ -269,25 +260,12 @@ def scale_colour_map(AMP, PC_max, scale_colours=None, eps=1e-6):
     -------
     rgb : (H, W, 3) float32 in [0, 1]
     """
-    n_scales = AMP.shape[0]
-
-    if scale_colours is None:
-        # red → orange → green → blue  (fine → coarse)
-        defaults = [
-            (0.90, 0.10, 0.10),   # σ smallest — red
-            (0.90, 0.55, 0.00),   # orange
-            (0.10, 0.75, 0.10),   # green
-            (0.10, 0.30, 0.90),   # blue
-        ]
-        scale_colours = defaults[:n_scales]
-
-    scale_colours = np.array(scale_colours, dtype=np.float32)  # (n_scales, 3)
 
     # Dominant scale per pixel — argmax of AMP² summed over orientations
     AMP2_per_scale = (AMP ** 2).max(axis=1)          # (n_scales, H, W)
     dominant_scale = np.argmax(AMP2_per_scale, axis=0)  # (H, W)
-
-    # Build colour image from winner scale
+    
+    # TODO Remove
     H, W = dominant_scale.shape
     rgb  = scale_colours[dominant_scale.ravel()].reshape(H, W, 3)
 
